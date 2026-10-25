@@ -6,7 +6,8 @@ This is the DOOM shareware IWAD, version 1.9, copyright id Software LLC
 It is included unmodified (md5 f0cefca49926d00903cf57551d901abe), as the
 shareware edition was released for free redistribution. It is distributed here
 free of charge and for no commercial purpose, only so the plugin can read the
-status bar faces at run time; no graphics are extracted into this repository.
+status bar faces at run time. The only other id Software artwork in this
+repository is in media/, two screen recordings of the plugin running.
 
 If you hold rights to this file and want it removed, open an issue and it will
 be taken down.
