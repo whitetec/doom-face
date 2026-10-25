@@ -1,10 +1,10 @@
-// Lector mínimo de WAD: saca de la paleta y los parches del status bar las caras del Doomguy,
-// listas para un Image como píxeles RGBA. Lee por rangos, nunca el archivo entero.
+// A minimal WAD reader: builds the Doomguy's faces from the palette and the status bar patches,
+// ready for an Image as RGBA pixels. It reads ranges, never the whole file.
 
 export type ReadRange = (offset: number, length: number) => Promise<Uint8Array>
 export type Face = { rgba: string; width: number; height: number }
 
-// Las caras de DOOM caben en 32x32 una vez ubicadas con sus offsets; se escalan sin suavizado.
+// DOOM's faces fit in 32x32 once placed by their offsets; they are scaled without smoothing.
 const CANVAS = 32
 export const SCALE = 4
 
@@ -14,7 +14,7 @@ const name8 = (b: Uint8Array, at: number) => {
   return s.toUpperCase()
 }
 
-// base64 con atob/btoa: los tipos de este build no declaran Uint8Array.toBase64/fromBase64.
+// base64 through atob/btoa: this build's types do not declare Uint8Array.toBase64/fromBase64.
 export function toBase64(b: Uint8Array) {
   let s = ''
   for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000))
@@ -30,7 +30,7 @@ export function fromBase64(text: string) {
 
 export const isFaceLump = (name: string) => name.startsWith('STF') && !name.startsWith('STFB')
 
-// Dibuja un parche (formato picture de DOOM) en un lienzo de 32x32, RGBA.
+// Draws a patch (DOOM's picture format) on a 32x32 RGBA canvas.
 export function drawPatch(patch: Uint8Array, palette: Uint8Array) {
   const v = new DataView(patch.buffer, patch.byteOffset, patch.byteLength)
   const w = v.getInt16(0, true)
@@ -75,7 +75,7 @@ export async function loadFaces(read: ReadRange): Promise<Record<string, Face>> 
   const head = await read(0, 12)
   const hv = new DataView(head.buffer, head.byteOffset, head.byteLength)
   const kind = String.fromCharCode(...head.subarray(0, 4))
-  if (kind !== 'IWAD' && kind !== 'PWAD') throw new Error('no es un WAD')
+  if (kind !== 'IWAD' && kind !== 'PWAD') throw new Error('not a WAD')
   const count = hv.getInt32(4, true)
   const dirAt = hv.getInt32(8, true)
   const dir = await read(dirAt, count * 16)
@@ -90,10 +90,10 @@ export async function loadFaces(read: ReadRange): Promise<Record<string, Face>> 
     if (name === 'PLAYPAL') palette ??= { at, size }
     else if (isFaceLump(name)) lumps.push({ name, at, size })
   }
-  if (!palette || lumps.length === 0) throw new Error('el WAD no trae las caras del status bar')
+  if (!palette || lumps.length === 0) throw new Error('the WAD has no status bar faces')
 
   const pal = await read(palette.at, 768)
-  // Las caras van juntas en el WAD: un solo rango las trae a todas.
+  // The faces sit together in the WAD: one range brings them all.
   const from = Math.min(...lumps.map(l => l.at))
   const to = Math.max(...lumps.map(l => l.at + l.size))
   const block = await read(from, to - from)

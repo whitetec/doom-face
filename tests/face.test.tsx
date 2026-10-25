@@ -3,7 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import { faceName, gesture, painLevel, pickWork } from '../hooks/register'
 import { fromBase64, loadFaces } from '../hooks/wad'
 
-test('la salud sigue al contexto como el nivel de dolor de DOOM', () => {
+test('health follows the context like DOOM\'s pain level', () => {
   expect(painLevel(0)).toBe(0)
   expect(painLevel(20)).toBe(0)
   expect(painLevel(21)).toBe(1)
@@ -15,14 +15,14 @@ test('la salud sigue al contexto como el nivel de dolor de DOOM', () => {
   expect(faceName(2, 'work', null, 1, 'TL', 0)).toBe('STFTL20')
 })
 
-test('los gestos de trabajo existen como sprites y nunca son la cara neutral', () => {
+test('working gestures are real sprites and never the neutral face', () => {
   for (const r of [0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 0.999]) {
     const k = pickWork(r)
     for (const h of [0, 1, 2, 3, 4]) expect(gesture(k, h)).toMatch(/^STF(T[LR][0-4]0|OUCH[0-4]|KILL[0-4])$/)
   }
 })
 
-// Un WAD mínimo: PLAYPAL con el color 7 en rojo y una cara de 1x2 píxeles con offset (-5, -2).
+// A minimal WAD: PLAYPAL with color 7 in red, and a 1x2 pixel face at offset (-5, -2).
 function tinyWad() {
   const pal = new Uint8Array(768)
   pal.set([255, 0, 0], 21)
@@ -52,13 +52,13 @@ function tinyWad() {
   return new Uint8Array([...head, ...body, ...dir])
 }
 
-test('el lector de WAD ubica cada parche con sus offsets y lo escala', async () => {
+test('the WAD reader places each patch by its offsets and scales it', async () => {
   const wad = tinyWad()
   const faces = await loadFaces(async (o, n) => wad.slice(o, o + n))
   const face = faces.STFST01!
   expect(face.width).toBe(128)
   const px = fromBase64(face.rgba)
-  // El píxel (0, 0) del parche cae en (5, 2) del lienzo de 32, y en (20..23, 8..11) escalado x4.
+  // The patch's pixel (0, 0) lands on (5, 2) of the 32 canvas, and on (20..23, 8..11) at 4x.
   const at = (x: number, y: number) => Array.from(px.subarray((y * 128 + x) * 4, (y * 128 + x) * 4 + 4))
   expect(at(20, 8)).toEqual([255, 0, 0, 255])
   expect(at(23, 15)).toEqual([255, 0, 0, 255])
@@ -66,7 +66,7 @@ test('el lector de WAD ubica cada parche con sus offsets y lo escala', async () 
   expect(at(20, 16)).toEqual([0, 0, 0, 0])
 })
 
-test('sin caras cargadas el pie queda como lo dibuja Claude Code', async ($, on) => {
+test('without faces loaded the footer stays as Claude Code draws it', async ($, on) => {
   on('ui.render', ($, e) => {
     const { Text } = $.ui.resolve(e)
     return <Text>/rc</Text>

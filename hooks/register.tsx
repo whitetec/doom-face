@@ -2,9 +2,9 @@ import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import { type Face, fromBase64, loadFaces } from './wad'
 
-// Estado base: quieto, trabajando sin herramientas, con una herramienta corriendo, o esperando permiso.
+// Base state: idle, working without tools, running a tool, or waiting for permission.
 export type Mode = 'idle' | 'work' | 'tool' | 'ask'
-// Expresiones temporales encima del estado base: dolor, sonrisa, God Mode, muerto.
+// Short-lived expressions over the base state: pain, grin, God Mode, dead.
 export type Flash = 'OUCH' | 'EVL' | 'GOD' | 'DEAD'
 
 const KEY = 'face'
@@ -12,14 +12,14 @@ const COLS = 6
 const ROWS = 3
 const TICK = 150
 
-// Cuánto dura cada expresión como mínimo, para que se llegue a ver.
+// The least each expression lasts, so it can be seen.
 const TOOL_MIN_MS = 1200
 const HEAVY_TOOL_MIN_MS = 2200
 const HEAVY_TOOLS = new Set(['Bash', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Agent', 'Task', 'WebFetch', 'WebSearch'])
 const FLASH_MS: Record<Flash, number> = { OUCH: 3000, EVL: 2500, GOD: 3000, DEAD: 3000 }
 
-// Trabajando: rota entre gestos con estos pesos, nunca la cara neutral (ST).
-// TL/TR = gira la cabeza, OUCH = sorpresa, KILL = concentrado.
+// Working: rotates between gestures with these weights, never the neutral face (ST).
+// TL/TR = turns his head, OUCH = surprise, KILL = focused.
 export const WORK_FACES: readonly (readonly [string, number])[] = [
   ['TL', 25],
   ['TR', 25],
@@ -27,7 +27,7 @@ export const WORK_FACES: readonly (readonly [string, number])[] = [
   ['OUCH', 20],
 ]
 
-// Estado del módulo, como session-vitals: se pierde en un hot reload y se rearma solo.
+// Module state: a hot reload drops it and it rebuilds itself.
 const s = {
   pct: 0,
   working: false,
@@ -42,29 +42,29 @@ const s = {
   nextWork: 0,
   requestId: null as string | null,
   shown: '',
-  // Vista previa de /doom: pisa la cara real hasta `until`.
+  // /doom preview: overrides the live face until `until`.
   preview: null as { mode: Mode; flash: Flash | null; h: number; until: number } | null,
 }
 
-// Las animaciones que /doom puede mostrar, con el nombre que usa el operador.
+// The animations /doom can show, by the name the command takes.
 export const ANIMS: Record<string, { mode: Mode; flash: Flash | null; label: string }> = {
-  reposo: { mode: 'idle', flash: null, label: 'en reposo: mira alrededor' },
-  trabajando: { mode: 'work', flash: null, label: 'pensando o escribiendo: gestos al azar' },
-  herramienta: { mode: 'tool', flash: null, label: 'ejecutando una herramienta' },
-  permiso: { mode: 'ask', flash: null, label: 'esperando permiso' },
-  dolor: { mode: 'idle', flash: 'OUCH', label: 'error' },
-  sonrisa: { mode: 'idle', flash: 'EVL', label: 'fin de turno' },
-  muerto: { mode: 'idle', flash: 'DEAD', label: 'cortado con Esc' },
-  god: { mode: 'idle', flash: 'GOD', label: 'compactación' },
+  idle: { mode: 'idle', flash: null, label: 'idle: looks around' },
+  working: { mode: 'work', flash: null, label: 'thinking or writing: random gestures' },
+  tool: { mode: 'tool', flash: null, label: 'running a tool' },
+  permission: { mode: 'ask', flash: null, label: 'waiting for permission' },
+  pain: { mode: 'idle', flash: 'OUCH', label: 'error' },
+  grin: { mode: 'idle', flash: 'EVL', label: 'turn finished' },
+  dead: { mode: 'idle', flash: 'DEAD', label: 'interrupted with Esc' },
+  god: { mode: 'idle', flash: 'GOD', label: 'context compacted' },
 }
 
 const PREVIEW_MS = 6000
 const DEMO_MS = 4000
 
-// Nivel de dolor como en DOOM (ST_calcPainOffset): salud = 100 - % de contexto usado.
+// Pain level as in DOOM (ST_calcPainOffset): health = 100 - % of context used.
 export const painLevel = (pct: number) => Math.min(4, Math.floor((Math.max(0, Math.min(100, pct)) * 5) / 101))
 
-// Elige un gesto de WORK_FACES según r en [0, 1).
+// Picks a gesture from WORK_FACES for r in [0, 1).
 export const pickWork = (r: number) => {
   const total = WORK_FACES.reduce((n, [, w]) => n + w, 0)
   let acc = 0
@@ -75,7 +75,7 @@ export const pickWork = (r: number) => {
   return 'KILL'
 }
 
-// El nombre del sprite para un gesto: ST0..2, TL, TR, OUCH, KILL, EVL.
+// The sprite name for a gesture: ST0..2, TL, TR, OUCH, KILL, EVL.
 export const gesture = (k: string, h: number) =>
   k.startsWith('ST') ? `STFST${h}${k.slice(2)}` : k === 'TL' || k === 'TR' ? `STF${k}${h}0` : `STF${k}${h}`
 
@@ -84,26 +84,26 @@ export const faceName = (h: number, mode: Mode, flash: Flash | null, look: numbe
   if (flash === 'DEAD') return 'STFDEAD0'
   if (flash) return `STF${flash}${h}`
   if (mode === 'tool') return `STFKILL${h}`
-  // Esperando permiso: mira nervioso a un lado y al otro.
+  // Waiting for permission: glances nervously from side to side.
   if (mode === 'ask') return Math.floor(now / 600) % 2 ? `STFTL${h}0` : `STFTR${h}0`
   if (mode === 'work') return gesture(work, h)
   return `STFST${h}${look}`
 }
 
-// El WAD que viaja con el mod: doom1.wad shareware v1.9, sin modificar.
+// The WAD that ships with the mod: doom1.wad shareware v1.9, unmodified.
 const WAD = 'assets/doom1.wad'
 
-// Las caras salen del WAD al arrancar; hasta entonces la esquina queda como la dibuja Claude Code.
+// The faces are read from the WAD at start; until then the corner stays as Claude Code draws it.
 let faces: Record<string, Face> | null = null
 
 const source = (name: string) => faces?.[name] ?? faces?.STFST01 ?? { rgba: '', width: 1, height: 1 }
 
-// Lee un rango del WAD con tail y head: $.fs.read no pasa de 4 MiB y el WAD entero es más grande.
+// Reads one range of the WAD with tail and head: $.fs.read stops at 4 MiB and the whole WAD is larger.
 async function wadFaces($: EngineInterface) {
   const path = `${$.plugin.root}/${WAD}`
   return loadFaces(async (offset, length) => {
     const r = await $.process.run(['sh', '-c', 'tail -c +"$2" "$1" | head -c "$3" | base64', 'sh', path, String(offset + 1), String(length)])
-    if (r.exitCode !== 0) throw new Error(r.stderr.trim() || `no pude leer ${path}`)
+    if (r.exitCode !== 0) throw new Error(r.stderr.trim() || `could not read ${path}`)
     return fromBase64(r.stdout.replace(/\s+/g, ''))
   })
 }
@@ -116,12 +116,12 @@ function mode(now: number): Mode {
 
 function current(now: number) {
   if (s.flash && now >= s.flashUntil) s.flash = null
-  // En reposo mira alrededor: cambia la mirada cada medio segundo a dos, al azar.
+  // Idle, he looks around: a new glance every half second to two, at random.
   if (now >= s.nextLook) {
     s.look = Math.floor(Math.random() * 3)
     s.nextLook = now + 500 + Math.random() * 1500
   }
-  // Trabajando cambia de gesto cada 1,5 a 2,5 s, sin repetir el anterior.
+  // Working, he changes gesture every 1.5 to 2.5 s, never repeating the last one.
   if (now >= s.nextWork) {
     let k = s.work
     while (k === s.work) k = pickWork(Math.random())
@@ -140,7 +140,7 @@ async function flash($: EngineInterface, f: Flash) {
   await paint($)
 }
 
-// Nunca tira: corre dentro de tool.call y tool.check, donde un error no debe tocar la herramienta.
+// Never throws: it runs inside tool.call and tool.check, where an error must not touch the tool.
 async function paint($: EngineInterface) {
   try {
     const name = current(Date.now())
@@ -148,12 +148,12 @@ async function paint($: EngineInterface) {
     s.shown = name
     await $.ui.blit({ requestId: s.requestId, key: KEY, source: source(name) })
   } catch {
-    // Sin imagen montada todavía: el próximo dibujo la pone.
+    // No image mounted yet: the next draw puts it there.
     s.shown = ''
   }
 }
 
-const USAGE = `Uso: /doom <animación> [nivel 0-4] | /doom demo [nivel] | /doom salud\nAnimaciones: ${Object.keys(ANIMS).join(', ')}`
+const USAGE = `Usage: /doom <animation> [level 0-4] | /doom demo [level] | /doom health\nAnimations: ${Object.keys(ANIMS).join(', ')}`
 
 export const register: Register = on => {
   let tick: Timer | null = null
@@ -167,12 +167,12 @@ export const register: Register = on => {
         faces = await wadFaces($)
         $.ui.invalidate('ui.render')
       } catch (err) {
-        $.ui.toast(`doom-face: no pude sacar las caras del WAD (${err instanceof Error ? err.message : String(err)})`)
+        $.ui.toast(`doom-face: could not read the faces from the WAD (${err instanceof Error ? err.message : String(err)})`)
       }
     }
     tick?.cancel()
     tick = $.clock.every(TICK, () => void paint($))
-    await $.command.register({ name: 'doom', description: 'Previsualizar las animaciones de la cara de DOOM', argumentHint: '<animación|demo|salud> [nivel 0-4]' })
+    await $.command.register({ name: 'doom', description: 'Preview the DOOM face animations', argumentHint: '<animation|demo|health> [level 0-4]' })
     return next(e)
   })
 
@@ -183,12 +183,12 @@ export const register: Register = on => {
     demo?.cancel()
     demo = null
 
-    // Salud: recorre los 5 niveles de reposo, de sano a ensangrentado.
+    // Health: walks the 5 idle levels, from healthy to bloody.
     const steps =
       what === 'demo'
         ? Object.entries(ANIMS).map(([k, a]) => ({ ...a, h: n, label: `${k} (${a.label})` }))
-        : what === 'salud'
-          ? [0, 1, 2, 3, 4].map(h => ({ ...ANIMS.reposo!, h, label: `salud nivel ${h}` }))
+        : what === 'health'
+          ? [0, 1, 2, 3, 4].map(h => ({ ...ANIMS.idle!, h, label: `health level ${h}` }))
           : ANIMS[what]
             ? [{ ...ANIMS[what]!, h: n, label: `${what} (${ANIMS[what]!.label})` }]
             : null
@@ -204,20 +204,20 @@ export const register: Register = on => {
         return
       }
       s.preview = { mode: st.mode, flash: st.flash, h: st.h, until: Date.now() + ms }
-      $.ui.toast(`doom: ${st.label}, nivel ${st.h}`)
+      $.ui.toast(`doom: ${st.label}, level ${st.h}`)
       void paint($)
       i += 1
     }
     show()
     if (steps.length > 1) demo = $.clock.every(ms, show)
     const secs = Math.round((ms * steps.length) / 1000)
-    return { text: `Mostrando ${steps.length === 1 ? steps[0]!.label : `${steps.length} animaciones`} durante ${secs} s.` }
+    return { text: `Showing ${steps.length === 1 ? steps[0]!.label : `${steps.length} animations`} for ${secs} s.` }
   })
 
   on('session.measure', async ($, e, next) => {
     const before = s.pct
     s.pct = e.context.percent ?? s.pct
-    // Una caída grande del contexto es una compactación: vuelve sano y con God Mode un rato.
+    // A big drop in context is a compaction: back to full health, with God Mode for a while.
     if (before - s.pct >= 30) await flash($, 'GOD')
     return next(e)
   })
@@ -245,7 +245,7 @@ export const register: Register = on => {
     if (main) {
       s.asking = false
       s.tools += 1
-      // La cara de herramienta se sostiene un mínimo aunque la herramienta tarde milisegundos.
+      // The tool face holds for a minimum even when the tool takes milliseconds.
       s.toolUntil = Math.max(s.toolUntil, Date.now() + (HEAVY_TOOLS.has(e.tool) ? HEAVY_TOOL_MIN_MS : TOOL_MIN_MS))
       await paint($)
     }
@@ -272,7 +272,7 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // La esquina derecha del pie: las etiquetas de modo de Claude Code y la cara al lado.
+  // The footer's right corner: Claude Code's mode labels, with the face beside them.
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
     if (e.surface !== 'terminal' || !faces) return next(e)
     const { Box, Image } = $.ui.resolve(e)

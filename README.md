@@ -37,14 +37,14 @@ claude plugin install doom-face --marketplace whitetec/doom-face
 
 ## Preview
 
-`/doom` shows any face on demand (the animation names are in Spanish):
+`/doom` shows any face on demand:
 
 | Command | Shows |
 |---|---|
 | `/doom demo` | every animation in a row, 4 s each |
 | `/doom demo 3` | the same at health level 3 (0 healthy, 4 bloody) |
-| `/doom salud` | the five health levels |
-| `/doom <name> [level]` | one animation for 6 s: `reposo`, `trabajando`, `herramienta`, `permiso`, `dolor`, `sonrisa`, `muerto`, `god` |
+| `/doom health` | the five health levels |
+| `/doom <name> [level]` | one animation for 6 s: `idle`, `working`, `tool`, `permission`, `pain`, `grin`, `dead`, `god` |
 
 ## How it works
 
@@ -54,6 +54,3 @@ It is a Claude Code mod (a plugin of function hooks, `hooks/register.tsx`). It d
 
 The code is MIT. `assets/doom1.wad` is id Software's DOOM shareware, included unmodified: see [NOTICE](NOTICE).
 
----
-
-**En español:** la cara del Doomguy en la esquina inferior derecha de Claude Code. Reacciona a lo que hace la sesión y su salud sigue el uso de contexto. Se instala con la línea de arriba y necesita kitty o Ghostty.
