@@ -2,30 +2,100 @@ import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import { type Face, fromBase64, loadFaces } from './wad'
 
+// A gesture names a sprite without its health digit: ST0..ST2 (looking left, ahead, right),
+// TL/TR (head turned), OUCH, EVL (grin), KILL (rampage), and the health-less GOD and DEAD.
+// A sequence is a list of [gesture, ms] frames.
+export type Seq = readonly (readonly [string, number])[]
+
 // Base state: idle, working without tools, running a tool, or waiting for permission.
 export type Mode = 'idle' | 'work' | 'tool' | 'ask'
-// Short-lived expressions over the base state: pain, grin, God Mode, dead.
-export type Flash = 'OUCH' | 'EVL' | 'GOD' | 'DEAD'
+export type ToolKind = 'read' | 'edit' | 'bash' | 'agent' | 'other'
 
 const KEY = 'face'
-const COLS = 6
-const ROWS = 3
-const TICK = 150
+const TICK = 100
 
-// The least each expression lasts, so it can be seen.
-const TOOL_MIN_MS = 1200
-const HEAVY_TOOL_MIN_MS = 2200
-const HEAVY_TOOLS = new Set(['Bash', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Agent', 'Task', 'WebFetch', 'WebSearch'])
-const FLASH_MS: Record<Flash, number> = { OUCH: 3000, EVL: 2500, GOD: 3000, DEAD: 3000 }
+// How much he moves, from the motion option: full animation, calm (slower, no flickers or
+// jolts), or still (one face per state).
+export type Motion = 'full' | 'calm' | 'still'
+export const motionOf = (v: unknown): Motion => (v === 'calm' || v === 'still' ? v : 'full')
 
-// Working: rotates between gestures with these weights, never the neutral face (ST).
-// TL/TR = turns his head, OUCH = surprise, KILL = focused.
-export const WORK_FACES: readonly (readonly [string, number])[] = [
-  ['TL', 25],
-  ['TR', 25],
-  ['KILL', 30],
-  ['OUCH', 20],
-]
+// The face's box in terminal cells, from the size option; each keeps the 2:1 cell ratio square.
+const SIZES: Record<string, { columns: number; rows: number }> = {
+  small: { columns: 4, rows: 2 },
+  medium: { columns: 6, rows: 3 },
+  large: { columns: 8, rows: 4 },
+}
+
+const cfg = { motion: 'full' as Motion, size: SIZES.medium! }
+
+// How a tool's name maps to the way he reacts to it.
+export const toolKind = (tool: string): ToolKind =>
+  /^(Read|Grep|Glob|LS|WebFetch|WebSearch|ToolSearch|NotebookRead)$/.test(tool)
+    ? 'read'
+    : /^(Edit|Write|MultiEdit|NotebookEdit)$/.test(tool)
+      ? 'edit'
+      : tool === 'Bash'
+        ? 'bash'
+        : /^(Agent|Task)$/.test(tool)
+          ? 'agent'
+          : 'other'
+
+// Looping faces while a tool runs. Reading scans side to side; Bash is the rampage face
+// with a flicker, like holding the trigger; editing alternates focus and a grin; agents grin
+// as they are summoned.
+export const TOOL_SEQ: Record<ToolKind, Seq> = {
+  read: [['TL', 380], ['ST1', 160], ['TR', 380], ['ST1', 160]],
+  edit: [['KILL', 700], ['ST1', 150], ['KILL', 500], ['EVL', 450]],
+  bash: [['KILL', 650], ['ST1', 90], ['KILL', 400], ['ST1', 90]],
+  agent: [['EVL', 700], ['KILL', 500], ['TL', 250], ['TR', 250]],
+  other: [['KILL', 600], ['ST1', 150]],
+}
+
+// Waiting for permission: glances from side to side, checking back at you.
+export const ASK_SEQ: Seq = [['TL', 500], ['ST1', 250], ['TR', 500], ['ST1', 250]]
+
+// One-shot reactions, played once over the base state.
+export const FLASH_SEQ = {
+  // A tool failed: hit, the head snaps to one side, then the other.
+  pain: [['OUCH', 650], ['TL', 280], ['TR', 280], ['OUCH', 650], ['ST1', 300], ['OUCH', 500]],
+  // The context jumped: a hit from one side, as DOOM turns the face toward the damage.
+  hit: [['TR', 350], ['OUCH', 450], ['ST1', 200]],
+  // The health level just dropped a step: a big hit.
+  wound: [['OUCH', 900], ['TL', 300], ['OUCH', 700], ['TR', 300]],
+  // Turn finished: a look, then the evil grin.
+  grin: [['ST1', 250], ['EVL', 1600], ['ST2', 250], ['EVL', 700]],
+  // Interrupted with Esc.
+  dead: [['OUCH', 400], ['DEAD', 2800]],
+  // Context compacted: back to full health with God Mode eyes, then a grin.
+  god: [['GOD', 1800], ['EVL', 900], ['GOD', 900]],
+} satisfies Record<string, Seq>
+export type Flash = keyof typeof FLASH_SEQ
+
+// Working without tools: the gestures he rotates through, with weights, by what the model is
+// doing; never the neutral face. Thinking glances and focuses; at high effort and above he
+// strains and changes faster; writing the answer is focus and a grin.
+export type WorkSet = 'think' | 'deep' | 'write'
+export const WORK_SETS: Record<WorkSet, Seq> = {
+  think: [['TL', 30], ['TR', 30], ['KILL', 28], ['OUCH', 12]],
+  deep: [['KILL', 34], ['OUCH', 26], ['TL', 15], ['TR', 15], ['EVL', 10]],
+  write: [['KILL', 45], ['EVL', 35], ['TL', 10], ['TR', 10]],
+}
+// Milliseconds between gesture changes, as [least, random spread]; calm stretches them 2.7 times.
+const WORK_PACE: Record<WorkSet, readonly [number, number]> = { think: [1500, 1000], deep: [900, 700], write: [1500, 1000] }
+
+// The model's effort as a rank, 0 (low) to 4 (max); -1 when the model takes none.
+export const effortRank = (e: unknown) => ['low', 'medium', 'high', 'xhigh', 'max'].indexOf(String(e))
+export const workSet = (phase: Phase, effort: number): WorkSet => (phase === 'write' ? 'write' : effort >= 2 ? 'deep' : 'think')
+export type Phase = 'think' | 'write'
+
+// At max effort, after this long thinking, his eyes flash gold now and then.
+const GLIMPSE_AFTER_MS = 20000
+const GLIMPSE_MS = 650
+
+// A rise in context of this many points in one measure counts as a hit.
+const HIT_POINTS = 3
+
+type Anim = { mode: Mode; kind?: ToolKind; flash?: Flash; work?: { phase: Phase; effort: number }; label: string }
 
 // Module state: a hot reload drops it and it rebuilds itself.
 const s = {
@@ -33,62 +103,131 @@ const s = {
   working: false,
   asking: false,
   tools: 0,
+  kind: 'other' as ToolKind,
+  toolSince: 0,
   toolUntil: 0,
   flash: null as Flash | null,
-  flashUntil: 0,
+  flashSince: 0,
   look: 1,
   nextLook: 0,
   work: 'KILL',
   nextWork: 0,
+  workSet: 'think' as WorkSet,
+  // What the model streams now (thinking or the answer's text), at what effort, and since when.
+  phase: 'think' as Phase,
+  effort: -1,
+  thinkSince: 0,
+  glimpseUntil: 0,
+  nextGlimpse: 0,
   requestId: null as string | null,
   shown: '',
   // /doom preview: overrides the live face until `until`.
-  preview: null as { mode: Mode; flash: Flash | null; h: number; until: number } | null,
+  preview: null as { anim: Anim; h: number; since: number; until: number } | null,
 }
 
 // The animations /doom can show, by the name the command takes.
-export const ANIMS: Record<string, { mode: Mode; flash: Flash | null; label: string }> = {
-  idle: { mode: 'idle', flash: null, label: 'idle: looks around' },
-  working: { mode: 'work', flash: null, label: 'thinking or writing: random gestures' },
-  tool: { mode: 'tool', flash: null, label: 'running a tool' },
-  permission: { mode: 'ask', flash: null, label: 'waiting for permission' },
-  pain: { mode: 'idle', flash: 'OUCH', label: 'error' },
-  grin: { mode: 'idle', flash: 'EVL', label: 'turn finished' },
-  dead: { mode: 'idle', flash: 'DEAD', label: 'interrupted with Esc' },
-  god: { mode: 'idle', flash: 'GOD', label: 'context compacted' },
+export const ANIMS: Record<string, Anim> = {
+  idle: { mode: 'idle', label: 'idle: looks around' },
+  thinking: { mode: 'work', work: { phase: 'think', effort: 1 }, label: 'thinking, low or medium effort' },
+  deep: { mode: 'work', work: { phase: 'think', effort: 3 }, label: 'thinking, high or xhigh effort' },
+  max: { mode: 'work', work: { phase: 'think', effort: 4 }, label: 'thinking, max effort, past 20 s' },
+  writing: { mode: 'work', work: { phase: 'write', effort: 1 }, label: 'writing the answer' },
+  read: { mode: 'tool', kind: 'read', label: 'reading or searching' },
+  edit: { mode: 'tool', kind: 'edit', label: 'editing files' },
+  bash: { mode: 'tool', kind: 'bash', label: 'running Bash' },
+  agent: { mode: 'tool', kind: 'agent', label: 'launching an agent' },
+  permission: { mode: 'ask', label: 'waiting for permission' },
+  hit: { mode: 'idle', flash: 'hit', label: 'context jumped' },
+  wound: { mode: 'idle', flash: 'wound', label: 'health dropped a level' },
+  pain: { mode: 'idle', flash: 'pain', label: 'a tool failed' },
+  grin: { mode: 'idle', flash: 'grin', label: 'turn finished' },
+  dead: { mode: 'idle', flash: 'dead', label: 'interrupted with Esc' },
+  god: { mode: 'idle', flash: 'god', label: 'context compacted' },
 }
 
 const PREVIEW_MS = 6000
-const DEMO_MS = 4000
+const DEMO_MS = 3500
 
 // Pain level as in DOOM (ST_calcPainOffset): health = 100 - % of context used.
 export const painLevel = (pct: number) => Math.min(4, Math.floor((Math.max(0, Math.min(100, pct)) * 5) / 101))
 
-// Picks a gesture from WORK_FACES for r in [0, 1).
-export const pickWork = (r: number) => {
-  const total = WORK_FACES.reduce((n, [, w]) => n + w, 0)
+export const seqLength = (seq: Seq) => seq.reduce((n, [, ms]) => n + ms, 0)
+
+// The gesture a sequence spends the most time on.
+const dominant = (seq: Seq) => {
+  const time = new Map<string, number>()
+  for (const [g, ms] of seq) time.set(g, (time.get(g) ?? 0) + ms)
+  return [...time].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'ST1'
+}
+
+// A sequence as the motion option plays it. Calm drops the frames under 200 ms (the flickers)
+// and plays loops 2.5 times slower; still holds the dominant gesture, a one-shot for at most 2.5 s.
+export function shape(seq: Seq, motion: Motion, loop: boolean): Seq {
+  if (motion === 'full') return seq
+  if (motion === 'still') return [[dominant(seq), loop ? 1000 : Math.min(2500, seqLength(seq))]]
+  const kept = seq.filter(([, ms]) => ms >= 200)
+  const base = kept.length > 0 ? kept : seq
+  return loop ? base.map(([g, ms]) => [g, ms * 2.5] as const) : base
+}
+
+const shapedCache = new Map<Seq, Map<string, Seq>>()
+const shaped = (seq: Seq, motion: Motion, loop: boolean) => {
+  const byMotion = shapedCache.get(seq) ?? new Map<string, Seq>()
+  shapedCache.set(seq, byMotion)
+  const key = `${motion}:${loop}`
+  const out = byMotion.get(key) ?? shape(seq, motion, loop)
+  byMotion.set(key, out)
+  return out
+}
+
+// The gesture a sequence shows `elapsed` ms after it started; null once a one-shot is over.
+export const frameAt = (seq: Seq, elapsed: number, loop: boolean) => {
+  const total = seqLength(seq)
+  if (!loop && elapsed >= total) return null
+  let t = loop ? elapsed % total : elapsed
+  for (const [g, ms] of seq) {
+    if (t < ms) return g
+    t -= ms
+  }
+  return seq[seq.length - 1]?.[0] ?? 'ST1'
+}
+
+// Picks a gesture from a working set for r in [0, 1).
+export const pickWork = (r: number, set: Seq = WORK_SETS.think) => {
+  const total = set.reduce((n, [, w]) => n + w, 0)
   let acc = 0
-  for (const [k, w] of WORK_FACES) {
+  for (const [k, w] of set) {
     acc += w / total
     if (r < acc) return k
   }
   return 'KILL'
 }
 
-// The sprite name for a gesture: ST0..2, TL, TR, OUCH, KILL, EVL.
+// The sprite name for a gesture at health level h.
 export const gesture = (k: string, h: number) =>
-  k.startsWith('ST') ? `STFST${h}${k.slice(2)}` : k === 'TL' || k === 'TR' ? `STF${k}${h}0` : `STF${k}${h}`
+  k === 'GOD' || k === 'DEAD'
+    ? `STF${k}0`
+    : k.startsWith('ST')
+      ? `STFST${h}${k.slice(2)}`
+      : k === 'TL' || k === 'TR'
+        ? `STF${k}${h}0`
+        : `STF${k}${h}`
 
-export const faceName = (h: number, mode: Mode, flash: Flash | null, look: number, work: string, now: number) => {
-  if (flash === 'GOD') return 'STFGOD0'
-  if (flash === 'DEAD') return 'STFDEAD0'
-  if (flash) return `STF${flash}${h}`
-  if (mode === 'tool') return `STFKILL${h}`
-  // Waiting for permission: glances nervously from side to side.
-  if (mode === 'ask') return Math.floor(now / 600) % 2 ? `STFTL${h}0` : `STFTR${h}0`
-  if (mode === 'work') return gesture(work, h)
-  return `STFST${h}${look}`
+export type Live = { mode: Mode; kind: ToolKind; flash: Flash | null; flashSince: number; toolSince: number }
+
+export const faceName = (h: number, live: Live, look: number, work: string, now: number, motion: Motion = 'full') => {
+  if (live.flash) {
+    const g = frameAt(shaped(FLASH_SEQ[live.flash], motion, false), now - live.flashSince, false)
+    if (g) return gesture(g, h)
+  }
+  if (live.mode === 'tool') return gesture(frameAt(shaped(TOOL_SEQ[live.kind], motion, true), now - live.toolSince, true) ?? 'KILL', h)
+  if (live.mode === 'ask') return gesture(frameAt(shaped(ASK_SEQ, motion, true), now, true) ?? 'ST1', h)
+  if (live.mode === 'work') return gesture(motion === 'still' ? 'KILL' : work, h)
+  return gesture(motion === 'still' ? 'ST1' : `ST${look}`, h)
 }
+
+// How long a one-shot runs under the current motion option.
+const flashLength = (f: Flash) => seqLength(shaped(FLASH_SEQ[f], cfg.motion, false))
 
 // The WAD that ships with the mod: doom1.wad shareware v1.9, unmodified.
 const WAD = 'assets/doom1.wad'
@@ -115,28 +254,50 @@ function mode(now: number): Mode {
 }
 
 function current(now: number) {
-  if (s.flash && now >= s.flashUntil) s.flash = null
-  // Idle, he looks around: a new glance every half second to two, at random.
+  const calm = cfg.motion === 'calm'
+  if (s.flash && now - s.flashSince >= flashLength(s.flash)) s.flash = null
+  // Idle, he looks around as in DOOM: mostly ahead, a glance aside every half second to two
+  // (every 3 to 8 s when calm).
   if (now >= s.nextLook) {
-    s.look = Math.floor(Math.random() * 3)
-    s.nextLook = now + 500 + Math.random() * 1500
+    const r = Math.random()
+    s.look = r < 0.5 ? 1 : r < 0.75 ? 0 : 2
+    s.nextLook = now + (calm ? 3000 + Math.random() * 5000 : 500 + Math.random() * 1500)
   }
-  // Working, he changes gesture every 1.5 to 2.5 s, never repeating the last one.
+  const p = s.preview && now < s.preview.until ? s.preview : null
+  // Working, the set follows what the model does and how hard it thinks; a new set picks at once.
+  const w = p?.anim.work ?? { phase: s.phase, effort: s.effort }
+  const set = workSet(w.phase, w.effort)
+  if (set !== s.workSet) {
+    s.workSet = set
+    s.nextWork = 0
+  }
   if (now >= s.nextWork) {
     let k = s.work
-    while (k === s.work) k = pickWork(Math.random())
+    while (k === s.work) k = pickWork(Math.random(), WORK_SETS[set])
     s.work = k
-    s.nextWork = now + 1500 + Math.random() * 1000
+    const [least, spread] = WORK_PACE[set]
+    s.nextWork = now + (least + Math.random() * spread) * (calm ? 2.7 : 1)
   }
-  const p = s.preview
-  if (p && now < p.until) return faceName(p.h, p.mode, p.flash, s.look, s.work, now)
+  // Max effort, thinking past 20 s: a glimpse of God Mode eyes every 6 to 10 s (full motion only).
+  const thinking = p ? p.anim.mode === 'work' && w.phase === 'think' : mode(now) === 'work' && s.phase === 'think' && !s.flash
+  const thoughtFor = p ? GLIMPSE_AFTER_MS + now - p.since : now - s.thinkSince
+  if (cfg.motion === 'full' && thinking && w.effort === 4 && thoughtFor >= GLIMPSE_AFTER_MS && now >= s.nextGlimpse) {
+    s.glimpseUntil = now + GLIMPSE_MS
+    s.nextGlimpse = now + 6000 + Math.random() * 4000
+  }
+  if (thinking && now < s.glimpseUntil) return 'STFGOD0'
+  if (p) {
+    const live: Live = { mode: p.anim.mode, kind: p.anim.kind ?? 'other', flash: p.anim.flash ?? null, flashSince: p.since, toolSince: p.since }
+    return faceName(p.h, live, s.look, s.work, now, cfg.motion)
+  }
   s.preview = null
-  return faceName(painLevel(s.pct), mode(now), s.flash, s.look, s.work, now)
+  const live: Live = { mode: mode(now), kind: s.kind, flash: s.flash, flashSince: s.flashSince, toolSince: s.toolSince }
+  return faceName(painLevel(s.pct), live, s.look, s.work, now, cfg.motion)
 }
 
 async function flash($: EngineInterface, f: Flash) {
   s.flash = f
-  s.flashUntil = Date.now() + FLASH_MS[f]
+  s.flashSince = Date.now()
   await paint($)
 }
 
@@ -155,7 +316,9 @@ async function paint($: EngineInterface) {
 
 const USAGE = `Usage: /doom <animation> [level 0-4] | /doom demo [level] | /doom health\nAnimations: ${Object.keys(ANIMS).join(', ')}`
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  cfg.motion = motionOf(options.motion)
+  cfg.size = SIZES[String(options.size)] ?? SIZES.medium!
   let tick: Timer | null = null
   let demo: Timer | null = null
 
@@ -176,6 +339,7 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // No toasts while previewing: a toast takes a row of the footer and makes the face jump.
   on('command.run', { command: 'doom' }, async ($, e) => {
     const [what = '', lvl] = e.args.trim().toLowerCase().split(/\s+/)
     const n = lvl === undefined ? painLevel(s.pct) : Number(lvl)
@@ -186,11 +350,11 @@ export const register: Register = on => {
     // Health: walks the 5 idle levels, from healthy to bloody.
     const steps =
       what === 'demo'
-        ? Object.entries(ANIMS).map(([k, a]) => ({ ...a, h: n, label: `${k} (${a.label})` }))
+        ? Object.values(ANIMS).map(a => ({ anim: a, h: n }))
         : what === 'health'
-          ? [0, 1, 2, 3, 4].map(h => ({ ...ANIMS.idle!, h, label: `health level ${h}` }))
+          ? [0, 1, 2, 3, 4].map(h => ({ anim: ANIMS.idle!, h }))
           : ANIMS[what]
-            ? [{ ...ANIMS[what]!, h: n, label: `${what} (${ANIMS[what]!.label})` }]
+            ? [{ anim: ANIMS[what]!, h: n }]
             : null
     if (!steps) return { text: USAGE }
 
@@ -203,22 +367,26 @@ export const register: Register = on => {
         demo = null
         return
       }
-      s.preview = { mode: st.mode, flash: st.flash, h: st.h, until: Date.now() + ms }
-      $.ui.toast(`doom: ${st.label}, level ${st.h}`)
+      const now = Date.now()
+      s.preview = { anim: st.anim, h: st.h, since: now, until: now + ms }
       void paint($)
       i += 1
     }
     show()
     if (steps.length > 1) demo = $.clock.every(ms, show)
     const secs = Math.round((ms * steps.length) / 1000)
-    return { text: `Showing ${steps.length === 1 ? steps[0]!.label : `${steps.length} animations`} for ${secs} s.` }
+    const list = what === 'demo' ? Object.keys(ANIMS).join(', ') : what === 'health' ? 'levels 0 to 4' : steps[0]!.anim.label
+    return { text: `Showing ${list} for ${secs} s.` }
   })
 
   on('session.measure', async ($, e, next) => {
     const before = s.pct
     s.pct = e.context.percent ?? s.pct
     // A big drop in context is a compaction: back to full health, with God Mode for a while.
-    if (before - s.pct >= 30) await flash($, 'GOD')
+    // A rise is damage: a hit, or a wound when it costs a health level.
+    if (before - s.pct >= 30) await flash($, 'god')
+    else if (painLevel(s.pct) > painLevel(before)) await flash($, 'wound')
+    else if (s.pct - before >= HIT_POINTS && !s.flash && cfg.motion === 'full') await flash($, 'hit')
     return next(e)
   })
 
@@ -226,9 +394,28 @@ export const register: Register = on => {
     if (!e.agentId) {
       s.working = true
       s.asking = false
+      s.phase = 'think'
+      s.thinkSince = Date.now()
       await paint($)
     }
     return next(e)
+  })
+
+  // Each request to the model: its effort, and whether what streams back is thinking or the
+  // answer's text. Every chunk is passed on untouched.
+  on('turn.step', async function* ($, e, next) {
+    if (e.agentId) return yield* next(e)
+    s.effort = effortRank(e.effort)
+    s.phase = 'think'
+    s.thinkSince = Date.now()
+    for await (const c of next(e)) {
+      if (c.kind === 'text' && s.phase !== 'write') s.phase = 'write'
+      else if (c.kind === 'thinking' && s.phase !== 'think') {
+        s.phase = 'think'
+        s.thinkSince = Date.now()
+      }
+      yield c
+    }
   })
 
   on('tool.check', async ($, e, next) => {
@@ -243,15 +430,19 @@ export const register: Register = on => {
   on('tool.call', async ($, e, next) => {
     const main = !e.agentId
     if (main) {
+      const now = Date.now()
+      const kind = toolKind(e.tool)
       s.asking = false
       s.tools += 1
-      // The tool face holds for a minimum even when the tool takes milliseconds.
-      s.toolUntil = Math.max(s.toolUntil, Date.now() + (HEAVY_TOOLS.has(e.tool) ? HEAVY_TOOL_MIN_MS : TOOL_MIN_MS))
+      if (kind !== s.kind || now >= s.toolUntil) s.toolSince = now
+      s.kind = kind
+      // Even a tool that takes milliseconds holds its face for one full pass of its sequence.
+      s.toolUntil = Math.max(s.toolUntil, now + Math.max(1200, seqLength(shaped(TOOL_SEQ[kind], cfg.motion, true))))
       await paint($)
     }
     try {
       const r = await next(e)
-      if (main && (('deny' in r && r.deny) || r.isError)) await flash($, 'OUCH')
+      if (main && (('deny' in r && r.deny) || r.isError)) await flash($, 'pain')
       return r
     } finally {
       if (main) {
@@ -267,7 +458,7 @@ export const register: Register = on => {
       s.asking = false
       s.tools = 0
       s.toolUntil = 0
-      await flash($, e.isAborted ? 'DEAD' : e.reason === 'error' ? 'OUCH' : 'EVL')
+      await flash($, e.isAborted ? 'dead' : e.reason === 'error' ? 'pain' : 'grin')
     }
     return next(e)
   })
@@ -284,7 +475,7 @@ export const register: Register = on => {
       <Box flexDirection="row" alignItems="flex-end">
         {own}
         <Box marginLeft={1}>
-          <Image key={KEY} source={source(s.shown)} columns={COLS} rows={ROWS} alt=" " />
+          <Image key={KEY} source={source(s.shown)} columns={cfg.size.columns} rows={cfg.size.rows} alt=" " />
         </Box>
       </Box>
     )

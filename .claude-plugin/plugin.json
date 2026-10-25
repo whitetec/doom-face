@@ -1,8 +1,34 @@
 {
   "name": "doom-face",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "The DOOM status bar face in Claude Code's footer: it reacts to what the session does, and its health follows the context window",
   "license": "MIT",
   "homepage": "https://github.com/whitetec/doom-face",
-  "author": { "name": "WhiteTec" }
+  "author": {
+    "name": "WhiteTec"
+  },
+  "userConfig": {
+    "motion": {
+      "type": "string",
+      "title": "Motion",
+      "description": "How much the face moves: full (every animation), calm (slower, no flickers or jolts) or still (one face per state)",
+      "default": "full",
+      "options": [
+        "full",
+        "calm",
+        "still"
+      ]
+    },
+    "size": {
+      "type": "string",
+      "title": "Size",
+      "description": "The face's size in the footer: small (4x2 cells), medium (6x3) or large (8x4)",
+      "default": "medium",
+      "options": [
+        "small",
+        "medium",
+        "large"
+      ]
+    }
+  }
 }

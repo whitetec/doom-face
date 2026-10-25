@@ -1,7 +1,10 @@
 import { expect, test } from 'claude-code/testing'
 
-import { faceName, gesture, painLevel, pickWork } from '../hooks/register'
+import { ASK_SEQ, FLASH_SEQ, TOOL_SEQ, WORK_SETS, effortRank, faceName, frameAt, gesture, motionOf, painLevel, pickWork, shape, toolKind, workSet } from '../hooks/register'
 import { fromBase64, loadFaces } from '../hooks/wad'
+
+const SPRITE = /^STF(ST[0-4][0-2]|T[LR][0-4]0|OUCH[0-4]|EVL[0-4]|KILL[0-4]|GOD0|DEAD0)$/
+const live = (over: object) => ({ mode: 'idle' as const, kind: 'other' as const, flash: null, flashSince: 0, toolSince: 0, ...over })
 
 test('health follows the context like DOOM\'s pain level', () => {
   expect(painLevel(0)).toBe(0)
@@ -9,17 +12,59 @@ test('health follows the context like DOOM\'s pain level', () => {
   expect(painLevel(21)).toBe(1)
   expect(painLevel(85)).toBe(4)
   expect(painLevel(100)).toBe(4)
-  expect(faceName(2, 'tool', null, 1, 'ST1', 0)).toBe('STFKILL2')
-  expect(faceName(3, 'idle', 'OUCH', 1, 'ST1', 0)).toBe('STFOUCH3')
-  expect(faceName(1, 'idle', null, 2, 'ST1', 0)).toBe('STFST12')
-  expect(faceName(2, 'work', null, 1, 'TL', 0)).toBe('STFTL20')
 })
 
-test('working gestures are real sprites and never the neutral face', () => {
-  for (const r of [0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 0.999]) {
-    const k = pickWork(r)
-    for (const h of [0, 1, 2, 3, 4]) expect(gesture(k, h)).toMatch(/^STF(T[LR][0-4]0|OUCH[0-4]|KILL[0-4])$/)
-  }
+test('every gesture of every sequence is a sprite the WAD has, at every health level', () => {
+  const seqs = [ASK_SEQ, ...Object.values(WORK_SETS), ...Object.values(TOOL_SEQ), ...Object.values(FLASH_SEQ)]
+  for (const seq of seqs) for (const [g] of seq) for (const h of [0, 1, 2, 3, 4]) expect(gesture(g, h)).toMatch(SPRITE)
+})
+
+test('sequences loop, one-shots end, and a flash wins over the base state', () => {
+  const seq = [['TL', 100], ['TR', 100]] as const
+  expect(frameAt(seq, 50, true)).toBe('TL')
+  expect(frameAt(seq, 150, true)).toBe('TR')
+  expect(frameAt(seq, 250, true)).toBe('TL')
+  expect(frameAt(seq, 250, false)).toBe(null)
+  expect(faceName(2, live({ mode: 'tool', kind: 'bash' }), 1, 'TL', 100)).toBe('STFKILL2')
+  expect(faceName(3, live({ mode: 'tool', flash: 'pain' }), 1, 'TL', 100)).toBe('STFOUCH3')
+  expect(faceName(1, live({}), 2, 'TL', 0)).toBe('STFST12')
+  expect(faceName(4, live({ flash: 'dead' }), 1, 'TL', 1000)).toBe('STFDEAD0')
+})
+
+test('calm drops flickers and slows loops; still holds one face', () => {
+  expect(motionOf('calm')).toBe('calm')
+  expect(motionOf('nonsense')).toBe('full')
+  const bash = TOOL_SEQ.bash
+  expect(shape(bash, 'full', true)).toBe(bash)
+  expect(shape(bash, 'calm', true)).toEqual([['KILL', 1625], ['KILL', 1000]])
+  expect(shape(bash, 'still', true)).toEqual([['KILL', 1000]])
+  expect(shape(FLASH_SEQ.pain, 'still', false)).toEqual([['OUCH', 2500]])
+  expect(faceName(1, live({ mode: 'work' }), 2, 'TL', 0, 'still')).toBe('STFKILL1')
+  expect(faceName(1, live({}), 2, 'TL', 0, 'still')).toBe('STFST11')
+})
+
+test('tools map to their reaction', () => {
+  expect(toolKind('Grep')).toBe('read')
+  expect(toolKind('Write')).toBe('edit')
+  expect(toolKind('Bash')).toBe('bash')
+  expect(toolKind('Agent')).toBe('agent')
+  expect(toolKind('mcp__x__y')).toBe('other')
+})
+
+test('working gestures are never the neutral face, in any set', () => {
+  for (const set of Object.values(WORK_SETS))
+    for (const r of [0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 0.999]) expect(pickWork(r, set).startsWith('ST')).toBe(false)
+})
+
+test('the working set follows the phase and the effort', () => {
+  expect(effortRank('max')).toBe(4)
+  expect(effortRank('medium')).toBe(1)
+  expect(effortRank(undefined)).toBe(-1)
+  expect(workSet('think', -1)).toBe('think')
+  expect(workSet('think', 1)).toBe('think')
+  expect(workSet('think', 2)).toBe('deep')
+  expect(workSet('think', 4)).toBe('deep')
+  expect(workSet('write', 4)).toBe('write')
 })
 
 // A minimal WAD: PLAYPAL with color 7 in red, and a 1x2 pixel face at offset (-5, -2).
