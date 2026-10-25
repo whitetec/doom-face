@@ -1,0 +1,12 @@
+assets/doom1.wad
+
+This is the DOOM shareware IWAD, version 1.9, copyright id Software LLC
+(a ZeniMax Media company). It is NOT covered by this repository's MIT license.
+
+It is included unmodified (md5 f0cefca49926d00903cf57551d901abe), as the
+shareware edition was released for free redistribution. It is distributed here
+free of charge and for no commercial purpose, only so the plugin can read the
+status bar faces at run time; no graphics are extracted into this repository.
+
+If you hold rights to this file and want it removed, open an issue and it will
+be taken down.

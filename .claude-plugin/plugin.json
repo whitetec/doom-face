@@ -1,0 +1,8 @@
+{
+  "name": "doom-face",
+  "version": "0.3.0",
+  "description": "The DOOM status bar face in Claude Code's footer: it reacts to what the session does, and its health follows the context window",
+  "license": "MIT",
+  "homepage": "https://github.com/whitetec/doom-face",
+  "author": { "name": "WhiteTec" }
+}

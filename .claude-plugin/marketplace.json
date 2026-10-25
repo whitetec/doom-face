@@ -1,0 +1,14 @@
+{
+  "name": "doom-face",
+  "description": "The DOOM status bar face for Claude Code in kitty and Ghostty",
+  "owner": {
+    "name": "WhiteTec"
+  },
+  "plugins": [
+    {
+      "name": "doom-face",
+      "source": "./",
+      "description": "The DOOM status bar face in Claude Code's footer: it reacts to what the session does, and its health follows the context window"
+    }
+  ]
+}
